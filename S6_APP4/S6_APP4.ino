@@ -3,8 +3,8 @@
 #include "freertos/task.h"
 
 // === Pins ===
-#define TX_PIN 33
-#define RX_PIN 25
+#define TX_PIN 14
+#define RX_PIN 12
 
 // === Manchester timing ===
 #define HALF_BIT_US 500
@@ -45,6 +45,7 @@ void sendManchesterMessage(const char* msg) {
 
   // Envoi réel
   sendManchesterChar(0x55);
+  //delayMicroseconds(HALF_BIT_US);
   sendManchesterChar(0x7E);
   sendManchesterChar(0x02);
   sendManchesterChar(len);
@@ -67,7 +68,9 @@ char receiveManchesterChar() {
     if (first == 0 && second == 1) {
       c |= (1 << i);
     } else if (first == 1 && second == 0) {
-      c &= ~(1 << i);
+      //c &= ~(1 << i);
+    } else {
+      i++;
     }
   }
   return c;
@@ -75,10 +78,8 @@ char receiveManchesterChar() {
 
 bool receiveManchesterFrame(char* msgBuffer) {
   bool msgReceived = false;
-  Serial.print("Hello");
-  while (receiveManchesterChar() != 0x55){
-    delayMicroseconds(HALF_BIT_US);
-  }
+  Serial.print("receiveManchesterFrame\n");
+  while (receiveManchesterChar() != 0x55);
 
   char start = receiveManchesterChar();
   Serial.print("Start: "); printByteBinary(start); Serial.print("\n");
@@ -88,7 +89,7 @@ bool receiveManchesterFrame(char* msgBuffer) {
   Serial.print("msgLen: "); printByteBinary(msgLen); Serial.print("\n");
 
   if (msgLen >= sizeof(receivedBuffer)) {
-    Serial.println("[RX] Erreur: message trop long");
+    Serial.println("[RX] Erreur: message trop long\n");
     msgBuffer[0] = '\0';
     return false;
   }
@@ -112,7 +113,7 @@ bool receiveManchesterFrame(char* msgBuffer) {
   }
 
   msgBuffer[msgLen] = '\0';
-  Serial.print("Fin analyse trame");
+  Serial.print("Fin analyse trame\n");
   return msgReceived;
 }
 
