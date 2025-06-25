@@ -7,10 +7,10 @@
 #define RX_PIN 12
 
 // === Manchester timing ===
-#define BIT_DURATION_MS 100
+#define BIT_DURATION_MS 4
 
 // === Message à transmettre ===
-const char* messageToSend = "Gab le quick";
+const char* messageToSend = "Hello";
 
 // === Buffer de réception partagé ===
 char receivedBuffer[256];
@@ -19,6 +19,13 @@ char receivedBuffer[256];
 const uint8_t PREAMBLE = 0x55;
 const uint8_t START_FLAG = 0x7E;
 const uint8_t END_FLAG = 0x7E;
+
+// === Paramètres injection erreur ===
+const float ERROR_PROBABILITY = 0.1f;  // 10% de chance d'injecter une erreur
+
+// === Chronomètre pour temps entre envoi et réception ===
+volatile unsigned long chronoStart = 0;
+volatile bool chronoStarted = false;
 
 // === Fonctions utilitaires ===
 uint16_t crc16(const uint8_t* data, size_t length) {
@@ -35,6 +42,13 @@ uint16_t crc16(const uint8_t* data, size_t length) {
 
 void printByteBinary(uint8_t byte) {
   for (int i = 7; i >= 0; i--) Serial.print((byte >> i) & 0x01);
+}
+
+void flipBitInBuffer(uint8_t* buffer, int len, int bitPos) {
+  int byteIndex = bitPos / 8;
+  int bitIndex = bitPos % 8;
+  if (byteIndex >= len) return;
+  buffer[byteIndex] ^= (1 << bitIndex);
 }
 
 // === Fonctions Manchester ===
@@ -80,24 +94,41 @@ uint8_t receiveManchesterByte() {
 
 void sendManchesterMessage(const char* msg) {
   size_t len = strlen(msg);
-  uint16_t crc = crc16((const uint8_t*)msg, len);
+  if (len >= 256) return;
+
+  uint8_t buffer[256];
+  memcpy(buffer, msg, len);
+
+  // Injection d'erreur aléatoire selon ERROR_PROBABILITY
+  if (random(100) < (ERROR_PROBABILITY * 100)) {
+    flipBitInBuffer(buffer, len, random(len * 8));
+    Serial.println("[TX] ⚠️ Erreur injectée aléatoirement !");
+  }
+
+  uint16_t crc = crc16((const uint8_t*)msg, len); // CRC sur message original
 
   sendManchesterByte(PREAMBLE);
   sendManchesterByte(START_FLAG);
-  sendManchesterByte(0x00); // type/flags
+  sendManchesterByte(0x00);
   sendManchesterByte(len);
 
   for (size_t i = 0; i < len; i++) {
-    sendManchesterByte(msg[i]);
+    sendManchesterByte(buffer[i]);
   }
 
   sendManchesterByte((crc >> 8) & 0xFF);
   sendManchesterByte(crc & 0xFF);
   sendManchesterByte(END_FLAG);
 
-  // Silence après envoi pour laisser le récepteur se resynchroniser
   digitalWrite(TX_PIN, HIGH);
-  vTaskDelay(pdMS_TO_TICKS(200));
+
+  // Chrono ne démarre qu'une seule fois avant réception
+  if (!chronoStarted) {
+    chronoStart = millis();
+    chronoStarted = true;
+  }
+
+  vTaskDelay(pdMS_TO_TICKS(8));
 }
 
 bool receiveManchesterFrame(char* msgBuffer) {
@@ -133,17 +164,25 @@ bool receiveManchesterFrame(char* msgBuffer) {
 void taskSendMessage(void* pvParameters) {
   while (true) {
     sendManchesterMessage(messageToSend);
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    vTaskDelay(pdMS_TO_TICKS(8));
   }
 }
 
 void taskReceiveMessage(void* pvParameters) {
   for (;;) {
     if (receiveManchesterFrame(receivedBuffer)) {
-      Serial.print("[RX] Message reçu : ");
+      unsigned long elapsed = millis() - chronoStart;
+
+      Serial.print("[RX] ✅ Message reçu : ");
       Serial.println(receivedBuffer);
+
+      Serial.print("[RX] ⏱️ Temps entre envoi et réception : ");
+      Serial.print(elapsed);
+      Serial.println(" ms");
+    } else {
+      Serial.println("[RX] ❌ Trame rejetée (erreur détectée)");
     }
-    // Pas de délai ici pour permettre réception continue
+    chronoStarted = false;  // Permet un nouveau chrono au prochain envoi
   }
 }
 
@@ -154,6 +193,8 @@ void setup() {
   pinMode(TX_PIN, OUTPUT);
   pinMode(RX_PIN, INPUT_PULLUP);
   digitalWrite(TX_PIN, HIGH);
+
+  randomSeed(analogRead(0));  // Initialisation RNG ESP32
 
   Serial.println("Démarrage des tâches sur 2 cœurs...");
 
